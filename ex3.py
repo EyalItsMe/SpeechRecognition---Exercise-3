@@ -2,17 +2,7 @@ import numpy as np
 import sys
 
 def ctc_loss(matrix_path, label_string, output_tokens):
-    # network_outputs = np.load(matrix_path)
-    network_outputs = np.array([
-        [0.1, 0.5, 0.6],  # Probabilities at time step 1
-        [0.4, 0.7, 0.1],  # Probabilities at time step 2
-        [0.1, 0.2, 0.1],  # Probabilities at time step 3
-        [0.3, 0.3, 0.2],  # Probabilities at time step 4
-        [0.2, 0.5, 0.2],  # Probabilities at time step 5
-        [0.1, 0.6, 0.1],  # Probabilities at time step 6
-        [0.3, 0.4, 0.1],  # Probabilities at time step 7
-        [0.4, 0.4, 0.1],  # Probabilities at time step 8
-    ])
+    network_outputs = np.load(matrix_path)
 
     epsilon = " "
     output_tokens = epsilon + output_tokens
@@ -47,14 +37,5 @@ if __name__ == '__main__':
     matrix_path = sys.argv[1]
     label_string = sys.argv[2]
     output_tokens = sys.argv[3]
-    # matrix_path = ""
-    # network_outputs = np.array([
-    #     [0.1, 0.1, 0.6, 0.2],  # Probabilities at time step 1
-    #     [0.1, 0.7, 0.1, 0.1],  # Probabilities at time step 2
-    #     [0.1, 0.2, 0.1, 0.6]  # Probabilities at time step 3
-    # ])
-    # label_string = "aba" #baa Epsilon A epsilon b epsilon a epsilon
-    # output_tokens = "ab"
-    # (a, b, c, ε). aabc epsilon a eplsion a epsilon b epsilon c epsilon
     print_p(ctc_loss(matrix_path, label_string, output_tokens))
 

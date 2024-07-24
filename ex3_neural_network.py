@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -7,16 +9,17 @@ import random
 import os
 import matplotlib.pyplot as plt
 
+digits = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+
 
 class NeuralNetwork(nn.Module):
-    #2 Layers i want it to be from input size to output size
-    def __init__(self, input_size,hidden_dim, output_size=10):
+    # 2 Layers I want it to be from input size to output size
+    def __init__(self, input_size, hidden_dim, output_size=27):
         super(NeuralNetwork, self).__init__()
-        self.rnn = nn.RNN(input_size, hidden_dim, batch_first=True)
+        self.rnn = nn.RNN(input_size, hidden_dim, num_layers=1, batch_first=True)
         self.ll = nn.Linear(hidden_dim, output_size)
         self.softmax = nn.LogSoftmax(dim=2)
         self.hidden_size = hidden_dim
-        self.num_layers = 1
 
     def forward(self, x):
         x, _ = self.rnn(x)
@@ -24,9 +27,22 @@ class NeuralNetwork(nn.Module):
         x = self.softmax(x)
         return x
 
-def train(model, train_loader, val_loader, criterion, optimizer, num_epochs, batch_size):
+
+
+def create_digit_to_int_mapping():
+    digit_to_int = {}
+
+    for word in digits:
+        int_list = [ord(char) - ord('a') for char in word]
+        digit_to_int[word] = int_list
+
+    return digit_to_int
+
+
+def train(model, train_loader, val_loader,criterion, optimizer, num_epochs, batch_size):
     train_losses = []
     val_losses = []
+    digit_to_int_mapping = create_digit_to_int_mapping()
     for epoch in range(num_epochs):
         running_loss = 0.0
 
@@ -34,14 +50,16 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs, bat
         for (mfccs, labels) in train_loader:
             # Prepare input and target lengths
             mfccs = mfccs.permute(0, 2, 1)  # Reshape for RNN input
-            labels = labels.squeeze(0)
-            input_lengths = torch.full((batch_size,), mfccs.size(1), dtype=torch.long)
-            target_lengths = torch.full((batch_size,), labels.size(1), dtype=torch.long)
+            input_lengths = torch.full((batch_size,), mfccs.size(2), dtype=torch.long)
+            lengths = [len(s) for s in labels]
+            target_lengths = torch.tensor(lengths, dtype=torch.long)
 
+            int_labels = [digit_to_int_mapping[label] for label in labels]
+            labels = [item for sublist in int_labels for item in sublist]
+            labels = torch.tensor(labels, dtype=torch.long)
             # Forward pass
             outputs = model(mfccs)
             outputs = outputs.permute(1, 0, 2)  # Reshape for CTC loss
-            # Compute CTC loss
             loss = criterion(outputs, labels, input_lengths, target_lengths)
 
             if torch.isnan(loss) or torch.isinf(loss):
@@ -57,35 +75,79 @@ def train(model, train_loader, val_loader, criterion, optimizer, num_epochs, bat
         train_losses.append(avg_train_loss)
         model.eval()
         val_loss = 0
+        accuracy = 0
         with torch.no_grad():
             for mfccs, labels in val_loader:
-                # mfccs = mfccs.squeeze(0)
-                mfccs = mfccs.permute(0, 2, 1)  # Reshape for RNN input
-
-                labels = labels.squeeze(0)
+                mfccs = mfccs.permute(0, 2, 1)
                 input_lengths = torch.full((batch_size,), mfccs.size(1), dtype=torch.long)
-                target_lengths = torch.full((batch_size,), labels.size(1), dtype=torch.long)
+                lengths = [len(s) for s in labels]
+                target_lengths = torch.tensor(lengths, dtype=torch.long)
+                int_labels = [digit_to_int_mapping[label] for label in labels]
+                int_labels = [item for sublist in int_labels for item in sublist]
+                int_labels = torch.tensor(int_labels, dtype=torch.long)
                 outputs = model(mfccs)
-                outputs = outputs.permute(1, 0, 2)  # Reshape for CTC loss
-
-                val_loss += criterion(outputs, labels, input_lengths, target_lengths).item()
+                min_loss = [math.inf] * len(labels)
+                max_digits = [""] * len(labels)
+                for digit in digits:
+                    for i, num in enumerate(min_loss):
+                        current_num = torch.tensor(digit_to_int_mapping[digit], dtype=torch.long)
+                        loss = criterion(outputs[i], current_num,
+                                         input_lengths[i], torch.tensor(current_num.size(0)))
+                        if loss < min_loss[i]:
+                            max_digits[i] = digit
+                            min_loss[i] = loss
+                for i, max_digit in enumerate(max_digits):
+                    if max_digit == labels[i]:
+                        accuracy += 1
+                outputs = outputs.permute(1, 0, 2)
+                val_loss += criterion(outputs, int_labels, input_lengths, target_lengths).item()
 
         avg_val_loss = val_loss / len(val_loader)
+        accuracy = accuracy / len(val_loader)
         val_losses.append(avg_val_loss)
-        print(f'Epoch {epoch+1}, Training Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
-        # print(f'Epoch {epoch+1}, Training Loss: {loss.item()}, Validation Loss: {val_loss / len(val_loader)}')
+        print(f'Epoch {epoch + 1}, Training Loss: {avg_train_loss}, Validation Loss: {avg_val_loss}')
+        print("Validation accuracy is " + str(accuracy) + "%")
     return train_losses, val_losses
 
-def load_wav_files(base_dir, n_mfcc):
-    digit_to_int = {
-        "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
-        "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9
-    }
+def test_model(test_loader, batch_size,model, criterion):
+    model.eval()
+    test_loss = 0
+    accuracy = 0
+    digit_to_int_mapping = create_digit_to_int_mapping()
+    with torch.no_grad():
+        for mfccs, labels in test_loader:
+            mfccs = mfccs.permute(0, 2, 1)
+            input_lengths = torch.full((batch_size,), mfccs.size(1), dtype=torch.long)
+            lengths = [len(s) for s in labels]
+            target_lengths = torch.tensor(lengths, dtype=torch.long)
+            int_labels = [digit_to_int_mapping[label] for label in labels]
+            int_labels = [item for sublist in int_labels for item in sublist]
+            int_labels = torch.tensor(int_labels, dtype=torch.long)
+            outputs = model(mfccs)
+            min_loss = [math.inf] * len(labels)
+            max_digits = [""] * len(labels)
+            for digit in digits:
+                for i, num in enumerate(min_loss):
+                    current_num = torch.tensor(digit_to_int_mapping[digit], dtype=torch.long)
+                    loss = criterion(outputs[i], current_num,
+                                     input_lengths[i], torch.tensor(current_num.size(0)))
+                    if loss < min_loss[i]:
+                        max_digits[i] = digit
+                        min_loss[i] = loss
+            for i, max_digit in enumerate(max_digits):
+                if max_digit == labels[i]:
+                    accuracy += 1
+            outputs = outputs.permute(1, 0, 2)
+            test_loss += criterion(outputs, int_labels, input_lengths, target_lengths).item()
 
+    test_loss = test_loss / len(test_loader)
+    accuracy = accuracy / len(test_loader)
+    print("Test loss is " + str(test_loss))
+    print("Test accuracy is " + str(accuracy) + "%")
+def load_wav_files(base_dir, n_mfcc):
     fixed_length = 16000
     mfcc_features = []
     labels = []
-    digits = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
     for digit in digits:
         digit_dir = os.path.join(base_dir, str(digit))
         for filename in os.listdir(digit_dir):
@@ -96,28 +158,24 @@ def load_wav_files(base_dir, n_mfcc):
             wav = librosa.util.fix_length(wav, size=fixed_length)
             mfcc = librosa.feature.mfcc(y=wav, sr=sr, n_mfcc=n_mfcc)
             mfcc_features.append(mfcc)
-            labels.append(digit_to_int[digit])
+            labels.append(digit)
 
     return mfcc_features, labels
+
 
 class DigitSequenceDataset(Dataset):
     def __init__(self, mfcc_features, labels, sequence_length=5):
         self.mfcc_features = mfcc_features
         self.labels = labels
-        self.sequence_length = sequence_length
 
     def __len__(self):
-        return len(self.mfcc_features) // self.sequence_length
+        return len(self.mfcc_features)
 
     def __getitem__(self, idx):
-        mfcc_seq = []
-        label_seq = []
-        for _ in range(self.sequence_length):
-            rand_idx = random.randint(0, len(self.mfcc_features) - 1)
-            mfcc_seq.append(self.mfcc_features[rand_idx])
-            label_seq.append(self.labels[rand_idx])
-        mfcc_seq = np.concatenate(mfcc_seq, axis=1)
-        return torch.tensor(mfcc_seq, dtype=torch.float32), torch.tensor(label_seq, dtype=torch.long)
+        mfcc = self.mfcc_features[idx]
+        label = self.labels[idx]
+        return torch.tensor(mfcc, dtype=torch.float32), label
+
 
 def plot_loss(train_losses, val_losses):
     plt.figure(figsize=(10, 5))
@@ -129,30 +187,30 @@ def plot_loss(train_losses, val_losses):
     plt.legend()
     plt.show()
 
+
 def q3():
-    seq_length = 8
-    n_mfcc = 13
+    n_mfcc = 20
     train_mfcc, train_labels = load_wav_files("train", n_mfcc)
     val_mfcc, val_labels = load_wav_files("val", n_mfcc)
     test_mfcc, test_labels = load_wav_files("test", n_mfcc)
 
-    train_dataset = DigitSequenceDataset(train_mfcc, train_labels, sequence_length=seq_length)
-    val_dataset = DigitSequenceDataset(val_mfcc, val_labels, sequence_length=seq_length)
-    test_dataset = DigitSequenceDataset(test_mfcc, test_labels, sequence_length=seq_length)
+    train_dataset = DigitSequenceDataset(train_mfcc, train_labels)
+    val_dataset = DigitSequenceDataset(val_mfcc, val_labels)
+    test_dataset = DigitSequenceDataset(test_mfcc, test_labels)
 
     batch_size = 64
     train_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=True, shuffle=True)
-    val_loader = DataLoader(val_dataset,batch_size=batch_size, drop_last=True, shuffle=False)
-    test_loader = DataLoader(test_dataset,batch_size=batch_size, drop_last=True, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, drop_last=True, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, drop_last=True, shuffle=False)
 
     criterion = nn.CTCLoss()
-    model = NeuralNetwork(n_mfcc, 128, 10)
+    model = NeuralNetwork(n_mfcc, 256, 27)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    train_loss, val_loss = train(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, batch_size=batch_size)
-
+    train_loss, val_loss = train(model, train_loader, val_loader, criterion, optimizer, num_epochs=15,
+                                 batch_size=batch_size)
+    test_model(test_loader,batch_size, model, criterion)
     plot_loss(train_loss, val_loss)
-
 
 
 if __name__ == "__main__":
